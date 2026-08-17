@@ -1,0 +1,127 @@
+pkgname=ps5-payload-libwebsockets
+pkgver=5.0.0
+pkgrel=1
+pkgdesc='Lightweight C library for HTTP and WebSocket clients and servers'
+arch=('any')
+url='https://libwebsockets.org/'
+license=('MIT')
+options=(!strip libtool staticlibs)
+source=("https://github.com/warmcat/libwebsockets/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('f853c6582101cfcee3a5a9e28ae92ab19d9735c5f31f0bb2e9794b5106123962')
+groups=('ps5-payload-dev')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+        export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+
+    cd "libwebsockets-${pkgver}"
+
+    # PS5 does not provide the optional execvpe()-based spawn helper.
+    sed -i 's/if (LWS_WITH_SPAWN)$/if (LWS_WITH_SPAWN AND NOT CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")/' \
+        lib/plat/unix/CMakeLists.txt
+
+    # The optional Unix privilege helpers depend on APIs that are not exposed
+    # by the PS5 target. Keep the public symbols as safe no-op stubs.
+    python3 - unix-caps.c <<'PY'
+from pathlib import Path
+
+path = Path('lib/plat/unix/unix-caps.c')
+text = path.read_text()
+marker = '#include <grp.h>\n'
+if marker not in text:
+    raise SystemExit('unix-caps.c include marker not found')
+
+stubs = r'''
+
+#if defined(LWS_PS5)
+
+int
+lws_plat_user_to_uid(const char *username, uid_t *puid)
+{
+    (void)username;
+    (void)puid;
+    return 1;
+}
+
+int
+lws_plat_group_to_gid(const char *groupname, gid_t *pgid)
+{
+    (void)groupname;
+    (void)pgid;
+    return 1;
+}
+
+int
+lws_plat_user_colon_group_to_ids(const char *u_colon_g, uid_t *puid,
+                                 gid_t *pgid)
+{
+    (void)u_colon_g;
+    (void)puid;
+    (void)pgid;
+    return 1;
+}
+
+int
+lws_plat_drop_app_privileges(struct lws_context *context, int actually_drop)
+{
+    (void)context;
+    (void)actually_drop;
+    return 0;
+}
+
+#else
+'''
+
+text = text.replace(marker, marker + stubs, 1)
+text += '\n#endif /* LWS_PS5 */\n'
+path.write_text(text)
+PY
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd "libwebsockets-${pkgver}"
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS='-DLWS_PS5=1' \
+        -DLWS_WITH_STATIC=ON \
+        -DLWS_WITH_SHARED=OFF \
+        -DLWS_WITH_SSL=OFF \
+        -DLWS_ROLE_H1=ON \
+        -DLWS_ROLE_WS=ON \
+        -DLWS_ROLE_QUIC=OFF \
+        -DLWS_WITH_HTTP2=OFF \
+        -DLWS_WITH_HTTP3=OFF \
+        -DLWS_WITH_LIBUV=OFF \
+        -DLWS_WITH_LIBEV=OFF \
+        -DLWS_WITH_LIBEVENT=OFF \
+        -DLWS_WITH_GLIB=OFF \
+        -DLWS_WITH_LWSWS=OFF \
+        -DLWS_WITH_PLUGINS=OFF \
+        -DLWS_WITH_CGI=OFF \
+        -DLWS_WITH_SPAWN=OFF \
+        -DLWS_WITH_MINIMAL_EXAMPLES=OFF \
+        -DLWS_WITHOUT_TESTAPPS=ON \
+        -DLWS_WITHOUT_TEST_SERVER=ON \
+        -DLWS_IPV6=OFF \
+        -DLWS_UNIX_SOCK=OFF \
+        -DLWS_WITH_POLL=ON \
+        -DLWS_WITH_ZIP_FOPS=OFF \
+        -DLWS_WITH_HTTP_STREAM_COMPRESSION=OFF \
+        -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
+        -B build \
+        -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd "libwebsockets-${pkgver}"
+
+    export DESTDIR="${pkgdir}/${DESTDIR}"
+    ${MAKE} -C build install
+
+    ${PS5_CROSS_FIX_ROOT} "${DESTDIR}/${PREFIX}"
+}
